@@ -7,7 +7,7 @@ from transformers import Pipeline
 from transformers.pipelines import pipeline
 from typing import Callable
 
-default_qa_template = "Based on the image, answer the following question by strictly selecting only one option from the given choices. Do not provide any additional explanation.\nQuestion: {question}\nAnswer:"
+default_qa_template = "Based on the image, answer the following question by strictly selecting only one option from the given choices. The output format should be '(X) xxx'. Do not provide any additional explanation.\nQuestion: {question}\nAnswer:"
 
 def is_answer_match(ans: str, should: str) -> bool:
     ans, should = ans.lower().strip(), should.lower().strip()
@@ -68,7 +68,9 @@ class VQAScorer:
             responses = vqa_pipeline(text=q_with_image, max_new_tokens=512, return_full_text=False)  # type: ignore
 
             for response, answer, qa_len, img_idx in zip(responses, answers, qa_lens, img_indices):
-                generated_answer = response[0]["generated_text"][-1]["content"]
+                generated_answer = response[0]["generated_text"]
+                print(generated_answer)
                 scores[img_idx] += (1 / qa_len) if is_answer_match(generated_answer, answer) else 0
+            # print(scores)
 
         return np.array(scores), None  # type: ignore

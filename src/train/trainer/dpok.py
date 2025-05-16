@@ -141,7 +141,7 @@ class Trainer:
         update_target_difficulty: Callable[[int], None],
         config: Config,
         reward_function: Callable[[Pipeline, torch.Tensor, tuple[str], tuple[Any]], torch.Tensor],
-        reward_init_function: Callable[[Accelerator], None],
+        reward_init_function: Callable[[Accelerator, int], None],
         prompt_function: Callable[[], tuple[str, Any]],
         vqa_model_name: str,
     ) -> None:
@@ -184,7 +184,7 @@ class Trainer:
             # the total number of optimizer steps to accumulate across.
             gradient_accumulation_steps=self.config.gradient_accumulation_steps * self.num_train_timesteps,
         )
-        reward_init_function(self.accelerator)
+        reward_init_function(self.accelerator, self.config.sample_batch_size)
         self.available_devices = self.accelerator.num_processes
         self._fix_seed()
         if self.accelerator.is_main_process:

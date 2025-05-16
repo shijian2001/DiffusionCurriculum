@@ -14,9 +14,8 @@ class CurriculumPromptLoader:
         self.accelerator: None | accelerate.Accelerator = None
         self.difficulty_to_prompts: dict[int, list[dict[str, Any]]] = {}
         self.difficulty_to_prompts_idx: dict[int, int] = {}
-        # TODO: 没用calculator，直接从prompt_path中读取，未来可能修改
         self.prompt_path = Path(prompt_path)
-        self.current_difficulty = 3
+        self.current_difficulty = 1
         self.sample_num_batches_per_epoch = 0
         self.t: tqdm.tqdm | None = None
         self.difficulty_range: tuple[int, int] | None = None
@@ -37,7 +36,7 @@ class CurriculumPromptLoader:
             self.difficulty_to_prompts[self._extract_difficulty(difficulty_str)] = prompts
             self.difficulty_to_prompts_idx[self._extract_difficulty(difficulty_str)] = self.accelerator.process_index
         self.t = tqdm.tqdm(total=total, desc="dataloader")
-        self.sample_num_batches_per_epoch = total // (self.accelerator.process_index * batch_size)
+        self.sample_num_batches_per_epoch = total // (self.accelerator.num_processes * batch_size)
         self.difficulty_range = (min(self.difficulty_to_prompts), max(self.difficulty_to_prompts))
 
     def _extract_difficulty(self, difficulty_str: str) -> int:

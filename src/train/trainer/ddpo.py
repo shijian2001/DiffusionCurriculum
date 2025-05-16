@@ -105,7 +105,7 @@ class Trainer:
         update_target_difficulty: Callable[[int], None],
         config: Config,
         reward_function: Callable[[Pipeline, torch.Tensor, tuple[str], tuple[Any]], torch.Tensor],
-        reward_init_function: Callable[[Accelerator], None],
+        reward_init_function: Callable[[Accelerator, int], None],
         prompt_function: Callable[[], tuple[str, Any]],
         vqa_model_name: str,
     ) -> None:
@@ -151,7 +151,7 @@ class Trainer:
             # 要跨累积的优化器步骤的总数。
             gradient_accumulation_steps=self.config.train_gradient_accumulation_steps * self.num_train_timesteps,
         )
-        reward_init_function(self.accelerator)
+        reward_init_function(self.accelerator, self.config.sample_batch_size)
         self.available_devices = self.accelerator.num_processes
         self._fix_seed()
 
