@@ -8,13 +8,16 @@ from typing import Any, Callable
 from accelerate import Accelerator
 from accelerate.utils import set_seed, ProjectConfiguration
 from accelerate.logging import get_logger
+from diffusers.utils.torch_utils import is_compiled_module
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import (
     StableDiffusionPipeline,
 )
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
+from diffusers.utils import convert_state_dict_to_diffusers
 from diffusers.loaders import AttnProcsLayers
 from peft import LoraConfig
+from peft.utils import get_peft_model_state_dict
 
 import numpy as np
 from train.curriculum import Curriculum
@@ -34,6 +37,7 @@ t = partial(tqdm.tqdm, dynamic_ncols=True)
 
 logger = get_logger(__name__)
 
+## TODO: load_state()
 
 @dataclass
 class Config:
@@ -100,14 +104,14 @@ class Config:
 
 class Trainer:
     def __init__(
-        self,
-        curriculum: Curriculum,
-        update_target_difficulty: Callable[[int], None],
-        config: Config,
-        reward_function: Callable[[Pipeline, torch.Tensor, tuple[str], tuple[Any]], torch.Tensor],
-        reward_init_function: Callable[[Accelerator, int], None],
-        prompt_function: Callable[[], tuple[str, Any]],
-        vqa_model_name: str,
+            self,
+            curriculum: Curriculum,
+            update_target_difficulty: Callable[[int], None],
+            config: Config,
+            reward_function: Callable[[Pipeline, torch.Tensor, tuple[str], tuple[Any]], torch.Tensor],
+            reward_init_function: Callable[[Accelerator, int], None],
+            prompt_function: Callable[[], tuple[str, Any]],
+            vqa_model_name: str,
     ) -> None:
         self.curriculum = curriculum
         self.update_target_difficulty = update_target_difficulty
@@ -197,6 +201,25 @@ class Trainer:
         self.pipeline.text_encoder.to(self.accelerator.device, dtype=inference_dtype)
         if self.config.use_lora:
             self.pipeline.unet.to(self.accelerator.device, dtype=inference_dtype)
+
+        if self.config.use_lora:
+            unet_lora_config = LoraConfig(
+                r=4,
+                lora_alpha=4,
+                init_lora_weights="gaussian",
+                target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+            )
+
+            self.pipeline.unet.add_adapter(unet_lora_config)
+
+            for param in self.pipeline.unet.parameters():
+                # only upcast trainable parameters (LoRA) into fp32
+                if param.requires_grad:
+                    param.data = param.to(torch.float32)
+        #     self.trainable_layers = filter(lambda p: p.requires_grad, self.pipeline.unet.parameters())
+        # else:
+        self.trainable_layers = self.pipeline.unet
+
         self.vqa_pipeline = pipeline(
             "image-text-to-text",
             model=vqa_model_name,
@@ -206,23 +229,6 @@ class Trainer:
         )
 
         self.vqa_pipeline.model.eval()
-
-        if self.config.use_lora:
-            unet_lora_config = LoraConfig(
-                r=4,
-                lora_alpha=4,
-                init_lora_weights="gaussian",
-                # target_modules=["mid_block", "up_blocks.*", "down_blocks.*", "attn1.processor.*"],
-                target_modules=["to_k", "to_q", "to_v", "to_out.0"],
-            )
-
-            self.pipeline.unet.add_adapter(unet_lora_config)
-            for param in self.pipeline.unet.parameters():
-                # only upcast trainable parameters (LoRA) into fp32
-                if param.requires_grad:
-                    param.data = param.to(torch.float32)
-
-        self.trainable_layers = self.pipeline.unet
 
         # 设置使用Accelerate的diffusers友好的检查点保存
         self.accelerator.register_save_state_pre_hook(self._save_model_hook)
@@ -277,12 +283,12 @@ class Trainer:
 
         # 计算每个epoch的样本数和批次大小
         self.samples_per_epoch = (
-            self.config.sample_batch_size * self.accelerator.num_processes * self.config.sample_num_batches_per_epoch
+                self.config.sample_batch_size * self.accelerator.num_processes * self.config.sample_num_batches_per_epoch
         )
         self.total_train_batch_size = (
-            self.config.train_batch_size
-            * self.accelerator.num_processes
-            * self.config.train_gradient_accumulation_steps
+                self.config.train_batch_size
+                * self.accelerator.num_processes
+                * self.config.train_gradient_accumulation_steps
         )
 
         # 检查配置的一致性
@@ -298,15 +304,10 @@ class Trainer:
         else:
             self.first_epoch = 0
 
-    def _save_model_hook(self, models, weights, output_dir):
-        assert len(models) == 1
-        if self.config.use_lora and isinstance(models[0], AttnProcsLayers):
-            self.pipeline.unet.save_attn_procs(output_dir)
-        elif not self.config.use_lora and isinstance(models[0], UNet2DConditionModel):
-            models[0].save_pretrained(os.path.join(output_dir, "unet"))
-        else:
-            raise ValueError(f"Unknown model type {type(models[0])}")
-        weights.pop()  # ensures that accelerate doesn't try to handle saving of the model
+    def _unwrap_model(self, model):
+        model = self.accelerator.unwrap_model(model)
+        model = model._orig_mod if is_compiled_module(model) else model
+        return model
 
     def _fix_seed(self):
         assert self.accelerator, "should call after init accelerator"
@@ -315,6 +316,25 @@ class Trainer:
         random_seeds = np.random.randint(0, 100000, size=self.available_devices)
         device_seed = random_seeds[self.accelerator.process_index]  # type: ignore
         set_seed(int(device_seed), device_specific=True)
+
+    def _save_model_hook(self, models, weights, output_dir):
+        assert len(models) == 1
+        if self.config.use_lora:
+            unwrapped_unet = self._unwrap_model(models[0])
+            unet_lora_state_dict = convert_state_dict_to_diffusers(
+                get_peft_model_state_dict(unwrapped_unet)
+            )
+
+            self.pipeline.save_lora_weights(
+                save_directory=output_dir,
+                unet_lora_layers=unet_lora_state_dict,
+                safe_serialization=True,
+            )
+        elif not self.config.use_lora and isinstance(models[0], UNet2DConditionModel):
+            models[0].save_pretrained(os.path.join(output_dir, "unet"))
+        else:
+            raise ValueError(f"Unknown model type {type(models[0])}")
+        weights.pop()  # ensures that accelerate doesn't try to handle saving of the model
 
     def _load_model_hook(self, models, input_dir):
         assert len(models) == 1
@@ -361,10 +381,10 @@ class Trainer:
         samples = []
         prompts = []
         for i in t(
-            range(self.config.sample_num_batches_per_epoch),
-            desc=f"Epoch {epoch}: sampling",
-            disable=not self.accelerator.is_local_main_process,
-            position=0,
+                range(self.config.sample_num_batches_per_epoch),
+                desc=f"Epoch {epoch}: sampling",
+                disable=not self.accelerator.is_local_main_process,
+                position=0,
         ):
             # 生成提示
             prompts, prompt_metadata = zip(*[self.prompt_fn() for _ in range(self.config.sample_batch_size)])
@@ -498,10 +518,10 @@ class Trainer:
             samples_batched = [dict(zip(samples_batched, x)) for x in zip(*samples_batched.values())]
 
             for i, batch in t(
-                list(enumerate(samples_batched)),
-                desc=f"Epoch {epoch}.{inner_epoch}: training",
-                position=0,
-                disable=not self.accelerator.is_local_main_process,
+                    list(enumerate(samples_batched)),
+                    desc=f"Epoch {epoch}.{inner_epoch}: training",
+                    position=0,
+                    disable=not self.accelerator.is_local_main_process,
             ):
                 self.step(batch, i, epoch, inner_epoch, global_step, info)
                 # 这里每个样本后递增global_step
@@ -528,11 +548,11 @@ class Trainer:
             embeds = batch["prompt_embeds"]
 
         for j in t(
-            range(self.num_train_timesteps),
-            desc="Timestep",
-            position=1,
-            leave=False,
-            disable=not self.accelerator.is_local_main_process,
+                range(self.num_train_timesteps),
+                desc="Timestep",
+                position=1,
+                leave=False,
+                disable=not self.accelerator.is_local_main_process,
         ):
             with self.accelerator.accumulate(self.pipeline.unet):
                 with self.autocast():
@@ -544,7 +564,7 @@ class Trainer:
                         ).sample
                         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                         noise_pred = noise_pred_uncond + self.config.sample_guidance_scale * (
-                            noise_pred_text - noise_pred_uncond
+                                noise_pred_text - noise_pred_uncond
                         )
                     else:
                         noise_pred = self.pipeline.unet(batch["latents"][:, j], batch["timesteps"][:, j], embeds).sample
@@ -593,7 +613,7 @@ class Trainer:
             # 检查accelerator是否在后台执行了优化步骤
             if self.accelerator.sync_gradients:
                 assert (j == self.num_train_timesteps - 1) and (
-                    i + 1
+                        i + 1
                 ) % self.config.train_gradient_accumulation_steps == 0
                 # 记录与训练相关的内容
                 # print("before info loss:", info["loss"])
