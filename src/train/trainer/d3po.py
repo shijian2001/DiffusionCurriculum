@@ -596,28 +596,6 @@ class Trainer:
 
         #################### 训练 ####################
         for inner_epoch in range(self.config.num_inner_epochs):
-            # 沿批次维度随机打乱样本
-            perm = torch.randperm(total_batch_size, device=self.accelerator.device)
-            samples = {k: v[perm] for k, v in orig_sample.items()}
-
-            # 对每个样本沿时间维度独立随机打乱
-            perms = torch.stack(
-                [torch.randperm(num_timesteps, device=self.accelerator.device) for _ in range(total_batch_size)]
-            )
-            for key in ["latents", "next_latents"]:
-                tmp = samples[key].permute(0, 2, 3, 4, 5, 1)[
-                    torch.arange(total_batch_size, device=self.accelerator.device)[:, None], perms
-                ]
-                samples[key] = tmp.permute(0, 5, 1, 2, 3, 4)
-            samples["timesteps"] = (
-                samples["timesteps"][torch.arange(total_batch_size, device=self.accelerator.device)[:, None], perms]
-                .unsqueeze(1)
-                .repeat(1, 2, 1)
-            )
-            tmp = samples["log_probs"].permute(0, 2, 1)[
-                torch.arange(total_batch_size, device=self.accelerator.device)[:, None], perms
-            ]
-            samples["log_probs"] = tmp.permute(0, 2, 1)
 
             # 重新分批用于训练
             samples_batched = {k: v.reshape(-1, self.config.train_batch_size, *v.shape[1:]) for k, v in samples.items()}

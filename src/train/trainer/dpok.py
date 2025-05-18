@@ -147,14 +147,14 @@ class Config:
 
 class Trainer:
     def __init__(
-        self,
-        curriculum: Curriculum,
-        update_target_difficulty: Callable[[int], None],
-        config: Config,
-        reward_function: Callable[[Pipeline, torch.Tensor, tuple[str], tuple[Any]], torch.Tensor],
-        reward_init_function: Callable[[Accelerator, int], None],
-        prompt_function: Callable[[], tuple[str, Any]],
-        vqa_model_name: str,
+            self,
+            curriculum: Curriculum,
+            update_target_difficulty: Callable[[int], None],
+            config: Config,
+            reward_function: Callable[[Pipeline, torch.Tensor, tuple[str], tuple[Any]], torch.Tensor],
+            reward_init_function: Callable[[Accelerator, int], None],
+            prompt_function: Callable[[], tuple[str, Any]],
+            vqa_model_name: str,
     ) -> None:
         self.curriculum = curriculum
         self.update_target_difficulty = update_target_difficulty
@@ -299,10 +299,10 @@ class Trainer:
         self.optimizer = optimizer
 
         self.samples_per_epoch = (
-            self.config.sample_batch_size * self.accelerator.num_processes * self.config.sample_num_batches_per_epoch
+                self.config.sample_batch_size * self.accelerator.num_processes * self.config.sample_num_batches_per_epoch
         )
         self.total_train_batch_size = (
-            self.config.train_batch_size * self.accelerator.num_processes * self.config.gradient_accumulation_steps
+                self.config.train_batch_size * self.accelerator.num_processes * self.config.gradient_accumulation_steps
         )
 
         assert self.config.sample_batch_size >= self.config.train_batch_size
@@ -396,10 +396,10 @@ class Trainer:
         samples: list[dict] = []
         prompts = []
         for _ in t(
-            range(self.config.sample_num_batches_per_epoch),
-            desc=f"Epoch {epoch}: sampling",
-            disable=not self.accelerator.is_local_main_process,
-            position=0,
+                range(self.config.sample_num_batches_per_epoch),
+                desc=f"Epoch {epoch}: sampling",
+                disable=not self.accelerator.is_local_main_process,
+                position=0,
         ):
             # generate prompts
             prompts, prompt_metadata = zip(*[self.prompt_fn() for _ in range(self.config.sample_batch_size)])
@@ -512,18 +512,6 @@ class Trainer:
 
         #################### TRAINING ####################
         for inner_epoch in range(self.config.num_inner_epochs):
-            # shuffle samples along batch dimension
-            perm = torch.randperm(total_batch_size, device=self.accelerator.device)
-            samples = {k: v[perm] for k, v in samples.items()}
-
-            # shuffle along time dimension independently for each sample
-            perms = torch.stack(
-                [torch.randperm(num_timesteps, device=self.accelerator.device) for _ in range(total_batch_size)]
-            )
-            for key in ["timesteps", "latents", "next_latents", "log_probs"]:
-                samples[key] = samples[key][
-                    torch.arange(total_batch_size, device=self.accelerator.device)[:, None], perms
-                ]
 
             # rebatch for training
             samples_batched = {k: v.reshape(-1, self.config.train_batch_size, *v.shape[1:]) for k, v in samples.items()}
@@ -535,10 +523,10 @@ class Trainer:
             self.sd_pipeline.unet.train()
             info = defaultdict(list)
             for i, sample in t(
-                list(enumerate(samples_batched)),
-                desc=f"Epoch {epoch}.{inner_epoch}: training",
-                position=0,
-                disable=not self.accelerator.is_local_main_process,
+                    list(enumerate(samples_batched)),
+                    desc=f"Epoch {epoch}.{inner_epoch}: training",
+                    position=0,
+                    disable=not self.accelerator.is_local_main_process,
             ):
                 self.step(sample, i, epoch, inner_epoch, global_step, info)
                 global_step += 1
@@ -560,11 +548,11 @@ class Trainer:
             embeds = sample["prompt_embeds"]
 
         for j in t(
-            range(self.num_train_timesteps),
-            desc="Timestep",
-            position=1,
-            leave=False,
-            disable=not self.accelerator.is_local_main_process,
+                range(self.num_train_timesteps),
+                desc="Timestep",
+                position=1,
+                leave=False,
+                disable=not self.accelerator.is_local_main_process,
         ):
             with self.accelerator.accumulate(self.sd_pipeline.unet):
                 with self.autocast():
@@ -576,7 +564,7 @@ class Trainer:
                         ).sample
                         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                         noise_pred = noise_pred_uncond + self.config.sample_guidance_scale * (
-                            noise_pred_text - noise_pred_uncond
+                                noise_pred_text - noise_pred_uncond
                         )
                     else:
                         noise_pred = self.sd_pipeline.unet(
