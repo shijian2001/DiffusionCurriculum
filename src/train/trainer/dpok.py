@@ -1,3 +1,4 @@
+import contextlib
 import datetime
 import logging
 import os
@@ -14,11 +15,15 @@ import tqdm
 import wandb
 from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration, set_seed
+from diffusers.loaders import AttnProcsLayers
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import (
     StableDiffusionPipeline,
 )
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+from diffusers.utils import convert_state_dict_to_diffusers
+from peft import LoraConfig
+from peft.utils import get_peft_model_state_dict
 from PIL import Image
 from transformers import Pipeline
 from transformers.pipelines import pipeline
@@ -42,6 +47,8 @@ class Config:
     sd_model: str = field(default="runwayml/stable-diffusion-v1-5")
     sd_revision: str = field(default="main")
     learning_rate: float = field(default=1e-4)
+    # whether to use LoRA for training instead of full model.
+    use_lora: bool = field(default=False)
 
     # random seed for reproducibility.
     seed: int = field(default=0)
@@ -202,7 +209,7 @@ class Trainer:
         # freeze parameters of models to save more memory
         self.sd_pipeline.vae.requires_grad_(False)
         self.sd_pipeline.text_encoder.requires_grad_(False)
-        self.sd_pipeline.unet.requires_grad_(True)
+        self.sd_pipeline.unet.requires_grad_(not self.config.use_lora)
         # disable safety checker
         self.sd_pipeline.safety_checker = None
         # make the progress bar nicer
@@ -227,6 +234,24 @@ class Trainer:
         # Move unet, vae and text_encoder to device and cast to inference_dtype
         self.sd_pipeline.vae.to(self.accelerator.device, dtype=inference_dtype)
         self.sd_pipeline.text_encoder.to(self.accelerator.device, dtype=inference_dtype)
+        if self.config.use_lora:
+            self.sd_pipeline.unet.to(self.accelerator.device, dtype=inference_dtype)
+
+        if self.config.use_lora:
+            unet_lora_config = LoraConfig(
+                r=4,
+                lora_alpha=4,
+                init_lora_weights="gaussian",
+                target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+            )
+
+            self.sd_pipeline.unet.add_adapter(unet_lora_config)
+
+            for param in self.sd_pipeline.unet.parameters():
+                # only upcast trainable parameters (LoRA) into fp32
+                if param.requires_grad:
+                    param.data = param.to(torch.float32)
+
         trainable_layers = self.sd_pipeline.unet
 
         self.accelerator.register_save_state_pre_hook(self._save_model_hook)
@@ -258,7 +283,7 @@ class Trainer:
 
         # for some reason, autocast is necessary for non-lora training but for lora training it isn't necessary and it uses
         # more memory
-        self.autocast = self.accelerator.autocast
+        self.autocast = contextlib.nullcontext if self.config.use_lora else self.accelerator.autocast
 
         # Prepare everything with our `accelerator`.
         trainable_layers, optimizer = self.accelerator.prepare(trainable_layers, self.optimizer)
@@ -305,7 +330,16 @@ class Trainer:
 
     def _save_model_hook(self, models, weights, output_dir):
         assert len(models) == 1
-        if isinstance(models[0], UNet2DConditionModel):
+        if self.config.use_lora:
+            unwrapped_unet = self.accelerator.unwrap_model(models[0])
+            unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
+
+            self.sd_pipeline.save_lora_weights(
+                save_directory=output_dir,
+                unet_lora_layers=unet_lora_state_dict,
+                safe_serialization=True,
+            )
+        elif isinstance(models[0], UNet2DConditionModel):
             models[0].save_pretrained(os.path.join(output_dir, "unet"))
         else:
             raise ValueError(f"Unknown model type {type(models[0])}")
@@ -313,7 +347,15 @@ class Trainer:
 
     def _load_model_hook(self, models, input_dir):
         assert len(models) == 1
-        if isinstance(models[0], UNet2DConditionModel):
+        if self.config.use_lora and isinstance(models[0], AttnProcsLayers):
+            # sd_pipeline.unet.load_attn_procs(input_dir)
+            tmp_unet = UNet2DConditionModel.from_pretrained(
+                self.config.sd_model, revision=self.config.sd_revision, subfolder="unet"
+            )
+            tmp_unet.load_attn_procs(input_dir)
+            models[0].load_state_dict(AttnProcsLayers(tmp_unet.attn_processors).state_dict())
+            del tmp_unet
+        elif not self.config.use_lora and isinstance(models[0], UNet2DConditionModel):
             load_model = UNet2DConditionModel.from_pretrained(input_dir, subfolder="unet")
             models[0].register_to_config(**load_model.config)  # type: ignore
             models[0].load_state_dict(load_model.state_dict())  # type: ignore
@@ -582,3 +624,7 @@ class Trainer:
                 info.update({"epoch": epoch, "inner_epoch": inner_epoch})
                 self.accelerator.log(info, step=global_step)
                 info = defaultdict(list)
+
+    def _unwrap_model(self, model):
+        """Unwraps model from accelerator wrapper, if needed."""
+        return self.accelerator.unwrap_model(model)
