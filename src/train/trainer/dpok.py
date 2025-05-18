@@ -171,7 +171,7 @@ class Trainer:
         self.num_train_timesteps = int(self.config.sample_num_steps * self.config.timestep_fraction)
 
         accelerator_config = ProjectConfiguration(
-            project_dir=os.path.join(self.config.log_dir, self.run_name),
+            project_dir=os.path.join(self.config.log_dir, self.config.run_name),
             automatic_checkpoint_naming=True,
             total_limit=self.config.num_checkpoint_limit,
         )
@@ -207,7 +207,7 @@ class Trainer:
             self.accelerator.init_trackers(
                 project_name="ddpo-pytorch",
                 config=asdict(self.config),
-                init_kwargs={"wandb": {"name": self.run_name}},
+                init_kwargs={"wandb": {"name": self.config.run_name}},
             )
         logger.info(f"\n{self.config}")
 
