@@ -536,7 +536,7 @@ class Trainer:
             # 确保我们在内部epoch结束时执行了优化步骤
             assert self.accelerator.sync_gradients
 
-        if epoch != 0 and epoch % self.config.save_freq == 0:
+        if epoch % self.config.save_freq == 0:
             # and self.accelerator.is_main_process:
             print("Start saving...")
             self.accelerator.wait_for_everyone()
