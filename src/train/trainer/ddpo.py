@@ -358,7 +358,8 @@ class Trainer:
     def train(self):
         """执行训练过程"""
         logger.info("***** Running training *****")
-        logger.info(f"  Num Epochs = {self.config.num_epochs}")
+        # logger.info(f"  Num Epochs = {self.config.num_epochs}")
+        logger.info(f"  Num Epochs = {self.curriculum.sample_num_batches_per_epoch_getter()}")
         logger.info(f"  Sample batch size per device = {self.config.sample_batch_size}")
         logger.info(f"  Train batch size per device = {self.config.train_batch_size}")
         logger.info(f"  Gradient Accumulation steps = {self.config.train_gradient_accumulation_steps}")
@@ -373,7 +374,7 @@ class Trainer:
         logger.info(f"  Number of inner epochs = {self.config.train_num_inner_epochs}")
 
         global_step = 0
-        for epoch in range(self.first_epoch, self.config.num_epochs):
+        for epoch in range(self.first_epoch, self.curriculum.sample_num_batches_per_epoch_getter()):
             global_step = self.epoch_loop(epoch, global_step)
 
     def _sample(self, epoch, global_step):
