@@ -541,7 +541,8 @@ class Trainer:
             # make sure we did an optimization step at the end of the inner epoch
             assert self.accelerator.sync_gradients
 
-        if epoch % self.config.save_freq == 0 and self.accelerator.is_main_process:
+        if epoch % self.config.save_freq == 0:
+            self.accelerator.wait_for_everyone()
             self.accelerator.save_state()
 
         return global_step
