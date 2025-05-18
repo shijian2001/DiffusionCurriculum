@@ -50,6 +50,7 @@ class Config:
     seed: int = field(default=42)
 
     # 日志和检查点配置
+    report_to: str = field(default="wandb")
     logdir: str = field(default="logs")
     run_name: str = field(default="")
     num_checkpoint_limit: int = field(default=10)
@@ -146,8 +147,10 @@ class Trainer:
             total_limit=self.config.num_checkpoint_limit,
         )
 
+        log_with = None if self.config.report_to.lower() == "none" else self.config.report_to
+
         self.accelerator = Accelerator(
-            log_with="wandb",
+            log_with=log_with,
             mixed_precision=self.config.mixed_precision,
             project_config=accelerator_config,
             # 我们总是在时间步之间累积梯度；我们希望config.train.gradient_accumulation_steps是
@@ -159,7 +162,7 @@ class Trainer:
         self.available_devices = self.accelerator.num_processes
         self._fix_seed()
 
-        if self.accelerator.is_main_process:
+        if self.accelerator.is_main_process and self.config.report_to == "wandb":
             self.accelerator.init_trackers(
                 project_name="ddpo-pytorch",
                 config=asdict(self.config),
@@ -459,20 +462,21 @@ class Trainer:
             step=global_step,
         )
         # 这是一个hack，强制wandb将图像记录为JPEG而不是PNG
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for i, image in enumerate(images):
-                pil = Image.fromarray((image.to(torch.float16).cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8))
-                pil = pil.resize((256, 256))
-                pil.save(os.path.join(tmpdir, f"{i}.jpg"))
-            self.accelerator.log(
-                {
-                    "images": [
-                        wandb.Image(os.path.join(tmpdir, f"{i}.jpg"), caption=f"{prompt:.25} | {reward:.2f}")
-                        for i, (prompt, reward) in enumerate(zip(prompts, rewards))
-                    ],
-                },
-                step=global_step,
-            )
+        if self.config.report_to == "wandb":
+            with tempfile.TemporaryDirectory() as tmpdir:
+                for i, image in enumerate(images):
+                    pil = Image.fromarray((image.to(torch.float16).cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8))
+                    pil = pil.resize((256, 256))
+                    pil.save(os.path.join(tmpdir, f"{i}.jpg"))
+                self.accelerator.log(
+                    {
+                        "images": [
+                            wandb.Image(os.path.join(tmpdir, f"{i}.jpg"), caption=f"{prompt:.25} | {reward:.2f}")
+                            for i, (prompt, reward) in enumerate(zip(prompts, rewards))
+                        ],
+                    },
+                    step=global_step,
+                )
 
         return zip_samples, prompts, rewards
 
