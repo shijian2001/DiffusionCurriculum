@@ -1,35 +1,36 @@
-from dataclasses import asdict, dataclass, field
-from collections import defaultdict
-import os
 import copy
 import datetime
-from train.trainer.common.pipeline_with_logprob import pipeline_with_logprob
-from train.trainer.common.ddim_with_logprob import ddim_step_with_logprob
+import os
+import tempfile
+from collections import defaultdict
+from dataclasses import asdict, dataclass, field
+from functools import partial
+from typing import Any, Callable
+
+import numpy as np
+import torch
+import tqdm
+import wandb
 from accelerate import Accelerator
-from accelerate.utils import set_seed, ProjectConfiguration
 from accelerate.logging import get_logger
+from accelerate.utils import ProjectConfiguration, set_seed
+from diffusers.loaders import AttnProcsLayers
+from diffusers.models.attention_processor import LoRAAttnProcessor
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
-from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import (
     StableDiffusionPipeline,
 )
 from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl import (
     StableDiffusionXLPipeline,
 )
-from diffusers.loaders import AttnProcsLayers
-from diffusers.models.attention_processor import LoRAAttnProcessor
-import numpy as np
-import torch
-import wandb
-from functools import partial
-import tqdm
-import tempfile
+from diffusers.schedulers.scheduling_ddim import DDIMScheduler
 from PIL import Image
-from typing import Any, Callable
 from transformers import Pipeline
 from transformers.pipelines import pipeline
 
 from train.curriculum import Curriculum
+from train.trainer.common.ddim_with_logprob import ddim_step_with_logprob
+from train.trainer.common.pipeline_with_logprob import pipeline_with_logprob
 from train.trainer.common.state_tracker import PerPromptStatTracker
 
 t = partial(tqdm.tqdm, dynamic_ncols=True)
@@ -614,7 +615,8 @@ class Trainer:
             # 确保在内部epoch结束时进行了优化步骤
             assert self.accelerator.sync_gradients
 
-        if epoch != 0 and epoch % self.config.save_freq == 0 and self.accelerator.is_main_process:
+        if epoch != 0 and epoch % self.config.save_freq == 0:
+            self.accelerator.wait_for_everyone()
             self.accelerator.save_state()
 
         return global_step
