@@ -1,43 +1,44 @@
-from collections import defaultdict
-import os
 import contextlib
 import datetime
+import os
+import tempfile
+from collections import defaultdict
 from dataclasses import asdict, dataclass, field
+from functools import partial
 from typing import Any, Callable
 
+import numpy as np
+import torch
+import tqdm
+import wandb
 from accelerate import Accelerator
-from accelerate.utils import set_seed, ProjectConfiguration
 from accelerate.logging import get_logger
-from diffusers.utils.torch_utils import is_compiled_module
+from accelerate.utils import ProjectConfiguration, set_seed
+from diffusers.loaders import AttnProcsLayers
+from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import (
     StableDiffusionPipeline,
 )
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
-from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 from diffusers.utils import convert_state_dict_to_diffusers
-from diffusers.loaders import AttnProcsLayers
+from diffusers.utils.torch_utils import is_compiled_module
 from peft import LoraConfig
 from peft.utils import get_peft_model_state_dict
-
-import numpy as np
-from train.curriculum import Curriculum
-from train.trainer.common.state_tracker import PerPromptStatTracker
-from train.trainer.common.pipeline_with_logprob import pipeline_with_logprob
-from train.trainer.common.ddim_with_logprob import ddim_step_with_logprob
-import torch
+from PIL import Image
 from transformers import Pipeline
 from transformers.pipelines import pipeline
-import wandb
-from functools import partial
-import tqdm
-import tempfile
-from PIL import Image
+
+from train.curriculum import Curriculum
+from train.trainer.common.ddim_with_logprob import ddim_step_with_logprob
+from train.trainer.common.pipeline_with_logprob import pipeline_with_logprob
+from train.trainer.common.state_tracker import PerPromptStatTracker
 
 t = partial(tqdm.tqdm, dynamic_ncols=True)
 
 logger = get_logger(__name__)
 
 ## TODO: load_state()
+
 
 @dataclass
 class Config:
@@ -105,14 +106,14 @@ class Config:
 
 class Trainer:
     def __init__(
-            self,
-            curriculum: Curriculum,
-            update_target_difficulty: Callable[[int], None],
-            config: Config,
-            reward_function: Callable[[Pipeline, torch.Tensor, tuple[str], tuple[Any]], torch.Tensor],
-            reward_init_function: Callable[[Accelerator, int], None],
-            prompt_function: Callable[[], tuple[str, Any]],
-            vqa_model_name: str,
+        self,
+        curriculum: Curriculum,
+        update_target_difficulty: Callable[[int], None],
+        config: Config,
+        reward_function: Callable[[Pipeline, torch.Tensor, tuple[str], tuple[Any]], torch.Tensor],
+        reward_init_function: Callable[[Accelerator, int], None],
+        prompt_function: Callable[[], tuple[str, Any]],
+        vqa_model_name: str,
     ) -> None:
         self.curriculum = curriculum
         self.update_target_difficulty = update_target_difficulty
@@ -286,12 +287,12 @@ class Trainer:
 
         # 计算每个epoch的样本数和批次大小
         self.samples_per_epoch = (
-                self.config.sample_batch_size * self.accelerator.num_processes * self.config.sample_num_batches_per_epoch
+            self.config.sample_batch_size * self.accelerator.num_processes * self.config.sample_num_batches_per_epoch
         )
         self.total_train_batch_size = (
-                self.config.train_batch_size
-                * self.accelerator.num_processes
-                * self.config.train_gradient_accumulation_steps
+            self.config.train_batch_size
+            * self.accelerator.num_processes
+            * self.config.train_gradient_accumulation_steps
         )
 
         # 检查配置的一致性
@@ -324,9 +325,7 @@ class Trainer:
         assert len(models) == 1
         if self.config.use_lora:
             unwrapped_unet = self._unwrap_model(models[0])
-            unet_lora_state_dict = convert_state_dict_to_diffusers(
-                get_peft_model_state_dict(unwrapped_unet)
-            )
+            unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
 
             self.pipeline.save_lora_weights(
                 save_directory=output_dir,
@@ -385,10 +384,10 @@ class Trainer:
         samples = []
         prompts = []
         for i in t(
-                range(self.config.sample_num_batches_per_epoch),
-                desc=f"Epoch {epoch}: sampling",
-                disable=not self.accelerator.is_local_main_process,
-                position=0,
+            range(self.config.sample_num_batches_per_epoch),
+            desc=f"Epoch {epoch}: sampling",
+            disable=not self.accelerator.is_local_main_process,
+            position=0,
         ):
             # 生成提示
             prompts, prompt_metadata = zip(*[self.prompt_fn() for _ in range(self.config.sample_batch_size)])
@@ -465,7 +464,9 @@ class Trainer:
         if self.config.report_to == "wandb":
             with tempfile.TemporaryDirectory() as tmpdir:
                 for i, image in enumerate(images):
-                    pil = Image.fromarray((image.to(torch.float16).cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8))
+                    pil = Image.fromarray(
+                        (image.to(torch.float16).cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
+                    )
                     pil = pil.resize((256, 256))
                     pil.save(os.path.join(tmpdir, f"{i}.jpg"))
                 self.accelerator.log(
@@ -523,10 +524,10 @@ class Trainer:
             samples_batched = [dict(zip(samples_batched, x)) for x in zip(*samples_batched.values())]
 
             for i, batch in t(
-                    list(enumerate(samples_batched)),
-                    desc=f"Epoch {epoch}.{inner_epoch}: training",
-                    position=0,
-                    disable=not self.accelerator.is_local_main_process,
+                list(enumerate(samples_batched)),
+                desc=f"Epoch {epoch}.{inner_epoch}: training",
+                position=0,
+                disable=not self.accelerator.is_local_main_process,
             ):
                 self.step(batch, i, epoch, inner_epoch, global_step, info)
                 # 这里每个样本后递增global_step
@@ -553,11 +554,11 @@ class Trainer:
             embeds = batch["prompt_embeds"]
 
         for j in t(
-                range(self.num_train_timesteps),
-                desc="Timestep",
-                position=1,
-                leave=False,
-                disable=not self.accelerator.is_local_main_process,
+            range(self.num_train_timesteps),
+            desc="Timestep",
+            position=1,
+            leave=False,
+            disable=not self.accelerator.is_local_main_process,
         ):
             with self.accelerator.accumulate(self.pipeline.unet):
                 with self.autocast():
@@ -569,7 +570,7 @@ class Trainer:
                         ).sample
                         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                         noise_pred = noise_pred_uncond + self.config.sample_guidance_scale * (
-                                noise_pred_text - noise_pred_uncond
+                            noise_pred_text - noise_pred_uncond
                         )
                     else:
                         noise_pred = self.pipeline.unet(batch["latents"][:, j], batch["timesteps"][:, j], embeds).sample
@@ -618,7 +619,7 @@ class Trainer:
             # 检查accelerator是否在后台执行了优化步骤
             if self.accelerator.sync_gradients:
                 assert (j == self.num_train_timesteps - 1) and (
-                        i + 1
+                    i + 1
                 ) % self.config.train_gradient_accumulation_steps == 0
                 # 记录与训练相关的内容
                 # print("before info loss:", info["loss"])
