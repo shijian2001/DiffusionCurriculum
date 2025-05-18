@@ -104,26 +104,26 @@ class Config:
     learning_rate: float = field(default=1e-4)
 
     # 训练相关配置
-    train_learning_rate: float = 3e-5
-    adam_beta1: float = 0.9
-    adam_beta2: float = 0.999
-    adam_weight_decay: float = 1e-4
-    adam_epsilon: float = 1e-8
-    gradient_accumulation_steps: int = 1
-    train_max_grad_norm: float = 1.0
-    num_inner_epochs: int = 1
-    train_cfg: bool = True
-    train_timestep_fraction: float = 1.0
-    train_activation_checkpointing: bool = False
+    train_learning_rate: float = field(default=3e-5)
+    adam_beta1: float = field(default=0.9)
+    adam_beta2: float = field(default=0.999)
+    adam_weight_decay: float = field(default=1e-4)
+    adam_epsilon: float = field(default=1e-8)
+    gradient_accumulation_steps: int = field(default=1)
+    train_max_grad_norm: float = field(default=1.0)
+    num_inner_epochs: int = field(default=1)
+    train_cfg: bool = field(default=True)
+    train_timestep_fraction: float = field(default=1.0)
+    train_activation_checkpointing: bool = field(default=False)
 
     # D3PO特有参数
-    train_eps: float = 0.1
-    train_beta: float = 1.0
+    train_eps: float = field(default=0.1)
+    train_beta: float = field(default=1.0)
 
     # 提示词和奖励函数
-    prompt_fn: str = "simple_animals"
+    prompt_fn: str = field(default="simple_animals")
     prompt_fn_kwargs: dict = field(default_factory=dict)
-    reward_fn: str = "jpeg_compressibility"
+    reward_fn: str = field(default="jpeg_compressibility")
 
 
 class Trainer:
