@@ -44,7 +44,7 @@ class Curriculum:
             max(
                 0,
                 metadata["current_step"]
-                // (self.sample_num_batches_per_epoch_getter() / (max_difficulty - min_difficulty)),
+                // (self.sample_num_batches_per_epoch_getter() / (max_difficulty - min_difficulty + 1)),
             )
             + min_difficulty,
             max_difficulty,
