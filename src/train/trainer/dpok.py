@@ -54,6 +54,8 @@ class Config:
     seed: int = field(default=0)
     # top-level logging directory for checkpoint saving.
     logdir: str = field(default="logs")
+    # logging platform to report to. Use "wandb" for Weights & Biases, or "none" to disable.
+    report_to: str = field(default="wandb")
     # number of epochs to train for. each epoch is one round of sampling from the model followed by training on those samples.
     num_epochs: int = field(default=400)
     # number of epochs between saving model checkpoints.
@@ -183,8 +185,10 @@ class Trainer:
             batch_size=config.train_batch_size,
         )
 
+        log_with = None if self.config.report_to.lower() == "none" else self.config.report_to
+
         self.accelerator = Accelerator(
-            log_with="wandb",
+            log_with=log_with,
             project_config=accelerator_config,
             # we always accumulate gradients across timesteps; we want config.train.gradient_accumulation_steps to be the
             # number of *samples* we accumulate across, so we need to multiply by the number of training timesteps to get
@@ -194,7 +198,7 @@ class Trainer:
         reward_init_function(self.accelerator, self.config.sample_batch_size)
         self.available_devices = self.accelerator.num_processes
         self._fix_seed()
-        if self.accelerator.is_main_process:
+        if self.accelerator.is_main_process and self.config.report_to.lower() != "none":
             self.accelerator.init_trackers(
                 project_name="ddpo-pytorch",
                 config=asdict(self.config),
