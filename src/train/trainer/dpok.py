@@ -50,6 +50,8 @@ class Config:
     # whether to use LoRA for training instead of full model.
     use_lora: bool = field(default=False)
 
+    run_name: str = field(default="")
+
     # random seed for reproducibility.
     seed: int = field(default=0)
     # top-level logging directory for checkpoint saving.
@@ -158,7 +160,10 @@ class Trainer:
         self.update_target_difficulty = update_target_difficulty
         self.config = config
         unique_id = datetime.datetime.now().strftime("%Y.%m.%d_%H.%M.%S")
-        self.run_name = f"dpok_{unique_id}"
+        if not self.config.run_name:
+            self.config.run_name = unique_id
+        else:
+            self.config.run_name += "_" + unique_id
         if self.config.resume_from:
             self.config.resume_from = self._norm_path(self.config.resume_from)
 
