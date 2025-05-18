@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import datetime
 import os
@@ -24,6 +25,10 @@ from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl import
     StableDiffusionXLPipeline,
 )
 from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+from diffusers.utils import convert_state_dict_to_diffusers
+from diffusers.utils.torch_utils import is_compiled_module
+from peft import LoraConfig
+from peft.utils import get_peft_model_state_dict
 from PIL import Image
 from transformers import Pipeline
 from transformers.pipelines import pipeline
@@ -243,26 +248,21 @@ class Trainer:
         self.vqa_pipeline.model.eval()
 
         if self.config.use_lora:
-            # Set correct lora layers
-            lora_attn_procs = {}
-            for name in self.sd_pipeline.unet.attn_processors.keys():
-                cross_attention_dim = (
-                    None if name.endswith("attn1.processor") else self.sd_pipeline.unet.config.cross_attention_dim
-                )
-                if name.startswith("mid_block"):
-                    hidden_size = self.sd_pipeline.unet.config.block_out_channels[-1]
-                elif name.startswith("up_blocks"):
-                    block_id = int(name[len("up_blocks.")])
-                    hidden_size = list(reversed(self.sd_pipeline.unet.config.block_out_channels))[block_id]
-                elif name.startswith("down_blocks"):
-                    block_id = int(name[len("down_blocks.")])
-                    hidden_size = self.sd_pipeline.unet.config.block_out_channels[block_id]
+            unet_lora_config = LoraConfig(
+                r=4,
+                lora_alpha=4,
+                init_lora_weights="gaussian",
+                target_modules=["to_k", "to_q", "to_v", "to_out.0"],
+            )
 
-                lora_attn_procs[name] = LoRAAttnProcessor(
-                    hidden_size=hidden_size, cross_attention_dim=cross_attention_dim
-                )
-            self.sd_pipeline.unet.set_attn_processor(lora_attn_procs)
-            self.trainable_layers = AttnProcsLayers(self.sd_pipeline.unet.attn_processors)
+            self.sd_pipeline.unet.add_adapter(unet_lora_config)
+
+            for param in self.sd_pipeline.unet.parameters():
+                # 只将可训练参数(LoRA)转为fp32
+                if param.requires_grad:
+                    param.data = param.to(torch.float32)
+
+            self.trainable_layers = self.sd_pipeline.unet
         else:
             self.trainable_layers = self.sd_pipeline.unet
 
@@ -312,7 +312,7 @@ class Trainer:
             )
 
         # 出于某种原因，对于非lora训练autocast是必要的，但对于lora训练它不是必要的，而且会使用更多内存
-        self.autocast = self.accelerator.autocast
+        self.autocast = contextlib.nullcontext if self.config.use_lora else self.accelerator.autocast
 
         # 使用`accelerator`准备所有内容
         self.trainable_layers, self.optimizer = self.accelerator.prepare(self.trainable_layers, self.optimizer)
@@ -340,6 +340,11 @@ class Trainer:
         else:
             self.first_epoch = 0
 
+    def _unwrap_model(self, model):
+        model = self.accelerator.unwrap_model(model)
+        model = model._orig_mod if is_compiled_module(model) else model
+        return model
+
     def _fix_seed(self):
         """设置随机种子，确保每个设备使用不同的种子"""
         np.random.seed(self.config.seed)
@@ -364,7 +369,16 @@ class Trainer:
     def _save_model_hook(self, models, weights, output_dir):
         """保存模型的钩子函数"""
         assert len(models) == 1
-        if isinstance(models[0], UNet2DConditionModel):
+        if self.config.use_lora:
+            unwrapped_unet = self._unwrap_model(models[0])
+            unet_lora_state_dict = convert_state_dict_to_diffusers(get_peft_model_state_dict(unwrapped_unet))
+
+            self.sd_pipeline.save_lora_weights(
+                save_directory=output_dir,
+                unet_lora_layers=unet_lora_state_dict,
+                safe_serialization=True,
+            )
+        elif isinstance(models[0], UNet2DConditionModel):
             models[0].save_pretrained(os.path.join(output_dir, "unet"))
         else:
             raise ValueError(f"Unknown model type {type(models[0])}")
@@ -373,7 +387,15 @@ class Trainer:
     def _load_model_hook(self, models, input_dir):
         """加载模型的钩子函数"""
         assert len(models) == 1
-        if isinstance(models[0], UNet2DConditionModel):
+        if self.config.use_lora:
+            # 为LoRA加载模型
+            tmp_unet = UNet2DConditionModel.from_pretrained(
+                self.config.pretrained_model, revision=self.config.pretrained_revision, subfolder="unet"
+            )
+            tmp_unet.load_attn_procs(input_dir)
+            models[0].load_state_dict(AttnProcsLayers(tmp_unet.attn_processors).state_dict())
+            del tmp_unet
+        elif isinstance(models[0], UNet2DConditionModel):
             load_model = UNet2DConditionModel.from_pretrained(input_dir, subfolder="unet")
             models[0].register_to_config(**load_model.config)
             models[0].load_state_dict(load_model.state_dict())
