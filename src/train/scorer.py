@@ -6,17 +6,25 @@ from torchvision.transforms import ToPILImage
 from transformers import Pipeline
 from transformers.pipelines import pipeline
 from typing import Callable
+import re
 
-default_qa_template = "Based on the image, answer the following question by strictly selecting only one option from the given choices. The output format should be '(X) xxx'. Do not provide any additional explanation.\nQuestion: {question}\nAnswer:"
+default_qa_template = "Based on the image, answer the following question by strictly selecting only one option from the given choices.\nQuestion: {question}\nAnswer:"
 
 def is_answer_match(ans: str, should: str) -> bool:
-    ans, should = ans.lower().strip(), should.lower().strip()
-    patterns = [
-        should,                     # "(B) 7 years"
-        should.split(')')[0] + ")", # "(B)"
-        should.split(') ')[1]       # "7 years"
-    ]
-    return any(pattern in ans for pattern in patterns)
+    ans = ans.lower().strip()
+    should = should.lower().strip()
+
+    option_part = should.split(")")[0] + ")"  # "(b)"
+    desc_part = should.split(") ")[1]  # "7 years"
+    option_letter = option_part[1]  # "b"
+
+    # 构造正则表达式，匹配：
+    # 1. 整个 should
+    # 2. 仅选项部分（如 "(b)"）
+    # 3. 仅描述部分（如 "7 years"）
+    # 4. 仅选项字母（如 "b"），且必须是独立字母
+    pattern = rf"^({re.escape(should)}|{re.escape(option_part)}|{re.escape(desc_part)}|\b{option_letter}\b)$"
+    return bool(re.fullmatch(pattern, ans))
 
 class VQAScorer:
     def __init__(self, set_curr_score: Callable[[int], None], template: str=default_qa_template) -> None:
@@ -69,7 +77,7 @@ class VQAScorer:
 
             for response, answer, qa_len, img_idx in zip(responses, answers, qa_lens, img_indices):
                 generated_answer = response[0]["generated_text"]
-                print(generated_answer)
+                # print(generated_answer)
                 scores[img_idx] += (1 / qa_len) if is_answer_match(generated_answer, answer) else 0
             # print(scores)
 
