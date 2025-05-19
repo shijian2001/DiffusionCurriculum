@@ -529,6 +529,16 @@ class Trainer:
                 rewards = np.c_[rewards1, rewards2]
 
             prompts1 = list(prompts1)
+
+            self.last_difficulty = self.curriculum.infer_target_difficulty(
+                {
+                    "current_step": global_step + i,
+                    "difficulty": self.last_difficulty,
+                    "reward": rewards.mean().cpu().numpy(),
+                }
+            )
+            self.update_target_difficulty(self.last_difficulty)
+
             samples.append(
                 {
                     "prompt_embeds": prompt_embeds,
