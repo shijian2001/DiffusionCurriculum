@@ -143,6 +143,7 @@ class Trainer:
             prompt_function: Callable[[], tuple[str, Any]],
             vqa_model_name: str,
     ) -> None:
+        self.last_difficulty = 0
         self.curriculum = curriculum
         self.update_target_difficulty = update_target_difficulty
         self.config = config
