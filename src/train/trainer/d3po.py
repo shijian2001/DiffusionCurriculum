@@ -669,7 +669,6 @@ class Trainer:
             with self.accelerator.accumulate(self.sd_pipeline.unet):
                 with self.autocast():
                     if self.config.train_cfg:
-                        print("sample 0 timestep shape:", sample_0["timesteps"].shape)
                         noise_pred_0 = self.sd_pipeline.unet(
                             torch.cat([sample_0["latents"][:, j]] * 2),
                             torch.cat([sample_0["timesteps"][:, j]] * 2),
