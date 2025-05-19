@@ -620,13 +620,6 @@ class Trainer:
 
                 # 反向传播
                 self.accelerator.backward(loss)
-                print("##################################### debug ##########################################")
-                # 在反向传播后
-                for name, param in self.trainable_layers.named_parameters():
-                    if param.requires_grad and param.grad is not None:
-                        print(f"{name}梯度存在，均值: {param.grad.mean().item()}")
-                print("##################################### debug ##########################################")
-
                 if self.accelerator.sync_gradients:
                     self.accelerator.clip_grad_norm_(
                         self.trainable_layers.parameters(), self.config.train_max_grad_norm
