@@ -517,6 +517,17 @@ class Trainer:
             self.pipeline.unet.train()
             info = defaultdict(list)
 
+            # shuffle samples along batch dimension
+            perm = torch.randperm(total_batch_size, device=self.accelerator.device)
+            samples = {k: v[perm] for k, v in samples.items()}
+
+            # shuffle along time dimension independently for each sample
+            perms = torch.stack(
+                [torch.randperm(num_timesteps, device=self.accelerator.device) for _ in range(total_batch_size)]
+            )
+            for key in ["timesteps", "latents", "next_latents", "log_probs"]:
+                samples[key] = samples[key][torch.arange(total_batch_size, device=self.accelerator.device)[:, None], perms]
+
             # rebatch for training
             samples_batched = {k: v.reshape(-1, self.config.train_batch_size, *v.shape[1:]) for k, v in samples.items()}
 
@@ -609,6 +620,13 @@ class Trainer:
 
                 # 反向传播
                 self.accelerator.backward(loss)
+                print("##################################### debug ##########################################")
+                # 在反向传播后
+                for name, param in self.trainable_layers.named_parameters():
+                    if param.requires_grad and param.grad is not None:
+                        print(f"{name}梯度存在，均值: {param.grad.mean().item()}")
+                print("##################################### debug ##########################################")
+
                 if self.accelerator.sync_gradients:
                     self.accelerator.clip_grad_norm_(
                         self.trainable_layers.parameters(), self.config.train_max_grad_norm

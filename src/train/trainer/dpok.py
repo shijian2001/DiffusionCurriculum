@@ -53,7 +53,7 @@ class Config:
     run_name: str = field(default="")
 
     # random seed for reproducibility.
-    seed: int = field(default=0)
+    seed: int = field(default=42)
     # top-level logging directory for checkpoint saving.
     logdir: str = field(default="logs")
     # logging platform to report to. Use "wandb" for Weights & Biases, or "none" to disable.
@@ -512,6 +512,18 @@ class Trainer:
 
         #################### TRAINING ####################
         for inner_epoch in range(self.config.num_inner_epochs):
+
+            # shuffle samples along batch dimension
+            perm = torch.randperm(total_batch_size, device=self.accelerator.device)
+            samples = {k: v[perm] for k, v in samples.items()}
+
+            # shuffle along time dimension independently for each sample
+            perms = torch.stack(
+                [torch.randperm(num_timesteps, device=self.accelerator.device) for _ in range(total_batch_size)]
+            )
+            for key in ["timesteps", "latents", "next_latents", "log_probs"]:
+                samples[key] = samples[key][
+                    torch.arange(total_batch_size, device=self.accelerator.device)[:, None], perms]
 
             # rebatch for training
             samples_batched = {k: v.reshape(-1, self.config.train_batch_size, *v.shape[1:]) for k, v in samples.items()}
